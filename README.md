@@ -68,6 +68,7 @@ The raw data consisted of 175,353 rows and 125 columns for 3 school years from 2
     
 **6. Create Decision Tree model using rpart**
 
+
 - rpart was ultimately used for predicting Physics, Chemistry, and Biology grades because it is easy to interpret.
 - the Complexity Parameter was tuned by used a 10-fold cross validation in all models to determine the number of trees to prune.
 - 86% Accuracy was achieved in predicting Physics success with 9th grades
