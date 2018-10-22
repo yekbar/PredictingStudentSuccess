@@ -1,0 +1,803 @@
+---
+title: "Machine Learning & Analysis for 2015 Cohort"
+author: "kat"
+date: "October 17, 2018"
+output:
+  html_document:
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+rm(list=ls())
+```
+
+
+#Purpose
+- The purpose of this file is to continue analysis from the cleaned ninth2015 file. This file uses the cleaned 2015 freshman and conducts predictive analytics using Random Forests, logistic regression, decision trees and statistical analysis using chi square.
+
+### Loading in data
+```{r}
+nine_nona <- readRDS("nine_nona.RDS")
+```
+
+### Random Forest
+```{r, message=FALSE, warning=FALSE}
+library(randomForest)
+
+#less personID
+nine_nona_ready <- nine_nona[,-c(1,10, 12)] # get rid of Person ID, Engineering, Grade
+
+saveRDS(nine_nona_ready, "nine_nona_ready.rds")
+
+nine_complete <- nine_nona_ready[complete.cases(nine_nona_ready),]
+# split into 70/30 random
+set.seed(100)
+train <- sample(nrow(nine_complete), 0.7*nrow(nine_complete), replace = FALSE)
+TrainSet <- nine_complete[train,]
+TestSet <- nine_complete[-train,]
+```
+
+### Create Model
+- changing mtry from 3 to 5 increases training accuracy, but not overall testing accuracy
+```{r}
+### random forest reference https://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#overview
+model1 <- randomForest(physicsSemPassed9 ~., data = TrainSet, interact=1, mtry=3, imp=1, mdim2nd=0,mdim2nd=3,  importance=TRUE, ntree=400, do.trace=100)
+model1
+plot(model1)
+
+#getTree(model1)
+#model1$importance
+varImpPlot(model1)
+#predict on testing
+
+predTrain <- predict(model1, TrainSet, type="class")
+predtable <- table(predTrain, TrainSet$physicsSemPassed9)
+sum(diag(predtable))/sum(predtable) #overall accuracy
+1-sum(diag(predtable))/sum(predtable) #incorrect classification 
+
+sum(diag(predtable))
+sum(predtable)
+```
+
+```{r}
+importance(model1)
+```
+
+
+```{r, eval=FALSE}
+# NOT WORKING??
+library(forestFloor)
+class(model1)
+forestFloor(rf.fit=model1, X=TrainSet, Xtest=TestSet, keep.inbag=T)
+```
+
+### Testing Set
+- 68% accuracy
+```{r}
+predTest <- predict(model1, TestSet, type="class")
+predtable2 <- table(predTest, TestSet$physicsSemPassed9)
+predtable2
+sum(diag(predtable2))/sum(predtable2) #overall accuracy
+1-sum(diag(predtable2))/sum(predtable2) #incorrect classification 
+
+```
+
+```{r, eval=FALSE}
+### TRY THIS?? https://chandramanitiwary.wordpress.com/2014/03/17/r-tips-part2-rocr-example-with-randomforest/
+library("ROCR")
+#prepare model for ROC Curve
+test.forest <- predict(model1, type = 'prob', newdata = TestSet)
+forestpred <- prediction(test.forest[,2], TestSet$class)
+forestperf <- performance(forestpred, 'tpr', 'fpr')
+plot(perf, main='ROC', colorize=T)
+plot(bagperf, col=2, add=TRUE)
+plot(perf, col=1, add=TRUE)
+plot(forestperf, col=3, add=TRUE)
+#legend(0.6, 0.6, c('ctree’, ‘bagging’, ‘rforest’), 1:3)
+
+```
+
+### Testing for which mtry model is best
+- see note on 5 above
+```{r}
+#code https://www.r-bloggers.com/how-to-implement-random-forests-in-r/
+# Using For loop to identify the right mtry for model
+a=c()
+i=5
+for (i in 3:8) {
+  model3 <- randomForest(physicsSemPassed9 ~ ., data = TrainSet, ntree = 500, mtry = i, importance = TRUE)
+  predTest <- predict(model3, TestSet, type = "class")
+  a[i-2] = mean(predTest == TestSet$physicsSemPassed9)
+}
+a
+plot(3:8,a)
+
+```
+
+### Plotting Trees
+```{r}
+#plotting https://shiring.github.io/machine_learning/2017/03/16/rf_plot_ggraph
+library(dplyr)
+library(ggraph)
+library(igraph)
+
+tree_func <- function(model1, 
+                      tree_num) {
+  
+  # get tree by index
+  tree <- randomForest::getTree(model1, 
+                                k = tree_num, 
+                                labelVar = TRUE) %>%
+    tibble::rownames_to_column() %>%
+    # make leaf split points to NA, so the 0s won't get plotted
+    mutate(`split point` = ifelse(is.na(prediction), `split point`, NA))
+  
+  # prepare data frame for graph
+  graph_frame <- data.frame(from = rep(tree$rowname, 2),
+                            to = c(tree$`left daughter`, tree$`right daughter`))
+  
+  # convert to graph and delete the last node that we don't want to plot
+  graph <- graph_from_data_frame(graph_frame) %>%
+    delete_vertices("0")
+  
+  # set node labels
+  V(graph)$node_label <- gsub("_", " ", as.character(tree$`split var`))
+  V(graph)$leaf_label <- as.character(tree$prediction)
+  V(graph)$split <- as.character(round(tree$`split point`, digits = 2))
+  
+  # plot
+  plot <- ggraph(graph, 'dendrogram') + 
+    theme_bw() +
+    geom_edge_link() +
+    geom_node_point() +
+    geom_node_text(aes(label = node_label), na.rm = TRUE, repel = TRUE) +
+    geom_node_label(aes(label = split), vjust = 2.5, na.rm = TRUE, fill = "white") +
+    geom_node_label(aes(label = leaf_label, fill = leaf_label), na.rm = TRUE, 
+					repel = TRUE, colour = "white", fontface = "bold", show.legend = FALSE) +
+    theme(panel.grid.minor = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.background = element_blank(),
+          plot.background = element_rect(fill = "white"),
+          panel.border = element_blank(),
+          axis.line = element_blank(),
+          axis.text.x = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks = element_blank(),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          plot.title = element_text(size = 18))
+  
+  print(plot)
+}
+
+```
+
+```{r}
+
+tree_func(model1, tree_num=5)
+```
+
+
+
+### Create binary predictor variable for physics (p/F)
+```{r}
+
+#nine_nona_ready
+# create new binary column
+nine_nona_ready$predPhy[nine_nona_ready$physicsSemPassed9 == 4] <- "p"
+nine_nona_ready$predPhy[nine_nona_ready$physicsSemPassed9 != 4] <- "f"
+
+#convert to factor
+nine_nona_ready[] <- lapply(nine_nona_ready, factor)
+nine_nona_binary <- nine_nona_ready[,-2] # remove physics sem passed
+#get rid of NAs
+nine_nona_binary <- nine_nona_binary[complete.cases(nine_nona_binary),]
+
+# split train/test
+# create model
+# split into 70/30 random
+set.seed(100)
+train <- sample(nrow(nine_nona_binary), 0.7*nrow(nine_nona_binary), replace = FALSE)
+TrainSet2 <- nine_nona_binary[train,]
+TestSet2 <- nine_nona_binary[-train,]
+
+
+model2 <- randomForest(predPhy ~., data = TrainSet2, mtry=3, importance=TRUE, ntree=400)
+model2
+plot(model2)
+
+#getTree(model2)
+#model2$importance
+varImpPlot(model2)
+#predict on testing
+
+predTrain2 <- predict(model2, TrainSet2, type="class")
+predtable2 <- table(predTrain2, TrainSet2$predPhy)
+sum(diag(predtable2))/sum(predtable2) #overall accuracy
+1-sum(diag(predtable2))/sum(predtable2) #incorrect classification 
+
+```
+
+### Testing Set
+- 86.5% accuracy
+```{r}
+predTest2 <- predict(model2, TestSet2, type="class")
+predtable3 <- table(predTest2, TestSet2$predPhy)
+predtable3
+sum(diag(predtable3))/sum(predtable3) #overall accuracy
+1-sum(diag(predtable3))/sum(predtable3) #incorrect classification 
+
+```
+
+
+###Testing for which mtry model is best
+- see note on 5 above
+```{r}
+#code https://www.r-bloggers.com/how-to-implement-random-forests-in-r/
+# Using For loop to identify the right mtry for model
+a=c()
+i=5
+for (i in 3:8) {
+  model3 <- randomForest(predPhy ~ ., data = TrainSet2, ntree = 400, mtry = i, importance = TRUE)
+  predTest <- predict(model3, TestSet2, type = "class")
+  a[i-2] = mean(predTest == TestSet2$predPhy)
+}
+a
+plot(3:8,a)
+
+```
+
+```{r}
+#plotting https://shiring.github.io/machine_learning/2017/03/16/rf_plot_ggraph
+library(dplyr)
+library(ggraph)
+library(igraph)
+
+tree_func <- function(model2, 
+                      tree_num) {
+  
+  # get tree by index
+  tree <- randomForest::getTree(model2, 
+                                k = tree_num, 
+                                labelVar = TRUE) %>%
+    tibble::rownames_to_column() %>%
+    # make leaf split points to NA, so the 0s won't get plotted
+    mutate(`split point` = ifelse(is.na(prediction), `split point`, NA))
+  
+  # prepare data frame for graph
+  graph_frame <- data.frame(from = rep(tree$rowname, 2),
+                            to = c(tree$`left daughter`, tree$`right daughter`))
+  
+  # convert to graph and delete the last node that we don't want to plot
+  graph <- graph_from_data_frame(graph_frame) %>%
+    delete_vertices("0")
+  
+  # set node labels
+  V(graph)$node_label <- gsub("_", " ", as.character(tree$`split var`))
+  V(graph)$leaf_label <- as.character(tree$prediction)
+  V(graph)$split <- as.character(round(tree$`split point`, digits = 2))
+  
+  # plot
+  plot <- ggraph(graph, 'dendrogram') + 
+    theme_bw() +
+    geom_edge_link() +
+    geom_node_point() +
+    geom_node_text(aes(label = node_label), na.rm = TRUE, repel = TRUE) +
+    geom_node_label(aes(label = split), vjust = 2.5, na.rm = TRUE, fill = "white") +
+    geom_node_label(aes(label = leaf_label, fill = leaf_label), na.rm = TRUE, 
+					repel = TRUE, colour = "white", fontface = "bold", show.legend = FALSE) +
+    theme(panel.grid.minor = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.background = element_blank(),
+          plot.background = element_rect(fill = "white"),
+          panel.border = element_blank(),
+          axis.line = element_blank(),
+          axis.text.x = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks = element_blank(),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          plot.title = element_text(size = 18))
+  
+  print(plot)
+}
+
+```
+
+```{r}
+
+tree_func(model2, tree_num=5)
+```
+
+### Cross Validation wtih caret
+```{r}
+library(caret)
+library(e1071)
+
+numFolds <- trainControl(method="cv", number=10)
+cpGrid <- expand.grid(.cp = seq(0.01, 0.5, 0.01))
+train(predPhy ~ ., data = TrainSet2, method = "rpart", trControl = numFolds, tuneGrid = cpGrid)
+
+```
+
+### TRAINSET 2 is 85% accuracy with rpart RandomForest
+
+```{r}
+library(rpart)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+rpartTree <- rpart(predPhy ~., data=TrainSet2, method="class", cp=.02, parms= list(split="gini"))
+predictionCV <- predict(rpartTree, newdata=TestSet2, type="class")
+table2 <- table(TestSet2$predPhy, predictionCV)
+
+
+sum(diag(table2))/sum(table2) #overall accuracy
+1-sum(diag(table2))/sum(table2) #incorrect classification 
+
+library(rpart.plot)
+prp(rpartTree)
+fancyRpartPlot(rpartTree)
+```
+
+
+
+### Only top predictors model
+```{r}
+
+colnames(nine_nona_ready)
+mostimportant <- nine_nona_ready[c( 4, 6, 8, 21)]
+#mostimportant
+
+mostimportant <- mostimportant[complete.cases(mostimportant),]
+
+# split train/test
+# create model
+# split into 70/30 random
+set.seed(100)
+train2 <- sample(nrow(mostimportant), 0.7*nrow(mostimportant), replace = FALSE)
+TrainSet4 <- mostimportant[train2,]
+TestSet4 <- mostimportant[-train2,]
+
+model4 <- randomForest(predPhy ~., data = TrainSet4, mtry=3, importance=TRUE, ntree=200, do.trace=TRUE)
+model4
+plot(model4)
+varImpPlot(model4)
+
+#predict on training
+predTrain4 <- predict(model4, TrainSet4, type="class")
+predtable4 <- table(predTrain4, TrainSet4$predPhy)
+sum(diag(predtable4))/sum(predtable4) #overall accuracy
+1-sum(diag(predtable4))/sum(predtable4) #incorrect classification
+
+# predict on testing
+predTest44 <- predict(model4, TestSet4, type="class")
+predtable44 <- table(predTest44, TestSet4$predPhy)
+predtable44
+sum(diag(predtable44))/sum(predtable44) #overall accuracy
+1-sum(diag(predtable44))/sum(predtable44) #incorrect classification 
+
+```
+
+### TrainSet4 Model
+- 82% accuracy
+```{r}
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+rpartTree4 <- rpart(predPhy ~., data=TrainSet4, method="class", cp=.02)
+predictionCV4 <- predict(rpartTree4, newdata=TestSet4, type="class")
+table4 <- table(TestSet4$predPhy, predictionCV4)
+
+
+sum(diag(table4))/sum(table4) #overall accuracy
+1-sum(diag(table4))/sum(table4) #incorrect classification 
+
+library(rpart.plot)
+prp(rpartTree4)
+fancyRpartPlot(rpartTree4)
+```
+
+
+```{r}
+#plotting https://shiring.github.io/machine_learning/2017/03/16/rf_plot_ggraph
+library(dplyr)
+library(ggraph)
+library(igraph)
+
+tree_func <- function(model4, 
+                      tree_num) {
+  
+  # get tree by index
+  tree <- randomForest::getTree(model4, 
+                                k = tree_num, 
+                                labelVar = TRUE) %>%
+    tibble::rownames_to_column() %>%
+    # make leaf split points to NA, so the 0s won't get plotted
+    mutate(`split point` = ifelse(is.na(prediction), `split point`, NA))
+  
+  # prepare data frame for graph
+  graph_frame <- data.frame(from = rep(tree$rowname, 2),
+                            to = c(tree$`left daughter`, tree$`right daughter`))
+  
+  # convert to graph and delete the last node that we don't want to plot
+  graph <- graph_from_data_frame(graph_frame) %>%
+    delete_vertices("0")
+  
+  # set node labels
+  V(graph)$node_label <- gsub("_", " ", as.character(tree$`split var`))
+  V(graph)$leaf_label <- as.character(tree$prediction)
+  V(graph)$split <- as.character(round(tree$`split point`, digits = 2))
+  
+  # plot
+  plot <- ggraph(graph, 'dendrogram') + 
+    theme_bw() +
+    geom_edge_link() +
+    geom_node_point() +
+    geom_node_text(aes(label = node_label), na.rm = TRUE, repel = TRUE) +
+    geom_node_label(aes(label = split), vjust = 2.5, na.rm = TRUE, fill = "white") +
+    geom_node_label(aes(label = leaf_label, fill = leaf_label), na.rm = TRUE, 
+					repel = TRUE, colour = "white", fontface = "bold", show.legend = FALSE) +
+    theme(panel.grid.minor = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.background = element_blank(),
+          plot.background = element_rect(fill = "white"),
+          panel.border = element_blank(),
+          axis.line = element_blank(),
+          axis.text.x = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks = element_blank(),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          plot.title = element_text(size = 18))
+  
+  print(plot)
+}
+
+```
+
+```{r}
+
+tree_func(model4, tree_num=3)
+```
+
+
+
+### Can freshman grades & physics predict success in chemisty?
+- Get chemistry classes in 10th grade & Bio 11th
+
+### Try to predict Chemistry grade with Freshman year
+
+```{r}
+
+nineTen <- readRDS("nineTen.rds")
+```
+
+```{r}
+# split train/test
+# create model
+# split into 70/30 random
+set.seed(100)
+train <- sample(nrow(nineTen), 0.7*nrow(nineTen), replace = FALSE)
+TrainSet3 <- nineTen[train,]
+TestSet3 <- nineTen[-train,]
+
+summary(TrainSet3)
+summary(TestSet3)
+
+model9_10 <- randomForest(predChem ~., data = TrainSet3, mtry=3, importance=TRUE, ntree=400)
+model9_10
+plot(model9_10)
+
+#getTree(model9_10)
+#model2$importance
+varImpPlot(model9_10)
+#predict on testing
+
+predTrain9_10 <- predict(model9_10, TrainSet3, type="class")
+predtable9_10 <- table(predTrain9_10, TrainSet3$predChem)
+sum(diag(predtable9_10))/sum(predtable9_10) #overall accuracy
+1-sum(diag(predtable9_10))/sum(predtable9_10) #incorrect classification 
+
+```
+
+### TESTING SET
+- Freshman year grades and chemistry grades  predict 83% accuracy
+```{r}
+predTest9_10 <- predict(model9_10, TestSet3, type="class")
+predtable9_10 <- table(predTest9_10, TestSet3$predChem)
+predtable9_10
+sum(diag(predtable9_10))/sum(predtable9_10) #overall accuracy
+1-sum(diag(predtable9_10))/sum(predtable9_10) #incorrect classification 
+
+
+# reference https://dinsdalelab.sdsu.edu/metag.stats/code/randomforest.html
+```
+
+### RPART FOR VISUAL
+- Trainset3 has Chem
+```{r}
+library(caret)
+library(e1071)
+
+numFolds <- trainControl(method="cv", number=10)
+cpGrid <- expand.grid(.cp = seq(0.01, 0.5, 0.01))
+train(predChem ~ ., data = TrainSet3, method = "rpart", trControl = numFolds, tuneGrid = cpGrid)
+
+```
+
+
+### Trainset3 for Chemistry
+- adding loss penalty decreased accuracy
+```{r}
+# penalize false positive (kid actually failed but model thought they would pass)
+#lossmatrix <- matrix(c(0,2,1,0), byrow=TRUE, nrow=2)
+
+library(rpart)
+library(caret)
+rpartTree5 <- rpart(predChem ~., data=TrainSet3, method="class", cp=.02)
+                    #parms=list(loss=lossmatrix))
+predictionCV5 <- predict(rpartTree5, newdata=TestSet3, type="class")
+table5 <- table(actual=TestSet3$predChem, prediction=predictionCV5)
+table5
+confusionMatrix(TestSet3$predChem, predictionCV5)
+
+#see principle components
+printcp(rpartTree5)
+
+sum(diag(table5))/sum(table5) #overall accuracy
+1-sum(diag(table5))/sum(table5) #incorrect classification 
+
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+#prp(rpartTree5)
+fancyRpartPlot(rpartTree5)
+
+
+```
+
+
+```{r}
+as.data.frame(rpartTree5$variable.importance)
+```
+
+
+### TrainSet3 RPart
+- 77% accuracy
+```{r}
+
+# Cross Validation wtih caret
+library(caret)
+library(e1071)
+
+numFolds <- trainControl(method="cv", number=10)
+cpGrid <- expand.grid(.cp = seq(0.01, 0.5, 0.01))
+train(predChem ~ ., data = TrainSet3, method = "rpart", trControl = numFolds, tuneGrid = cpGrid)
+
+
+library(rpart)
+rpartTree9_10 <- rpart(predChem ~., data=TrainSet3, method="class", cp=.01)
+predictionCV9_10 <- predict(rpartTree9_10, newdata=TestSet3, type="class")
+table9_10 <- table(TestSet3$predChem, predictionCV9_10)
+
+
+sum(diag(table9_10))/sum(table9_10) #overall accuracy
+1-sum(diag(table9_10))/sum(table9_10) #incorrect classification 
+
+library(rpart.plot)
+prp(rpartTree9_10)
+
+```
+
+
+### Chi Square between combos of classes
+- ALL ARE independent of each other!!! 
+```{r}
+nine_tenChem <- readRDS("nine_tenChem.rds") #9/10 cohort classes
+colnames(nine_tenChem)
+nine_ten_chi <- nine_tenChem[c(1, 3, 5, 7, 9, 25)]
+```
+
+```{r}
+# Physics & math
+chisq.test(nine_ten_chi$physicsSemPassed9, nine_ten_chi$mathSemPassed9)
+
+# Physics & Chem
+chisq.test(nine_ten_chi$physicsSemPassed9, nine_ten_chi$ChemSemPassed10, simulate.p.value = TRUE)
+
+#physics & history
+chisq.test(nine_ten_chi$physicsSemPassed9, nine_ten_chi$historySemPassed9, simulate.p.value = TRUE)
+
+#physics & english
+chisq.test(nine_ten_chi$physicsSemPassed9, nine_ten_chi$englishSemPassed9, simulate.p.value = TRUE)
+
+# Chem & math
+chisq.test(nine_ten_chi$mathSemPassed9, nine_ten_chi$ChemSemPassed10, simulate.p.value = TRUE)
+
+#Chem & history
+chisq.test(nine_ten_chi$historySemPassed9, nine_ten_chi$ChemSemPassed10, simulate.p.value = TRUE)
+
+#Chem & english
+chisq.test(nine_ten_chi$englishSemPassed9, nine_ten_chi$ChemSemPassed10, simulate.p.value = TRUE) 
+
+
+#math & english
+chisq.test(nine_ten_chi$mathSemPassed9, nine_ten_chi$englishSemPassed9, simulate.p.value = TRUE)
+
+#math & history
+chisq.test(nine_ten_chi$mathSemPassed9, nine_ten_chi$historySemPassed9, simulate.p.value = TRUE)
+
+# history & engish
+chisq.test(nine_ten_chi$englishSemPassed9, nine_ten_chi$historySemPassed9, simulate.p.value = TRUE)
+```
+
+### Chi square of engineering & physics & chem
+- Chi square for engineering & phsyics were LOWER than the other 9th grade classes!
+- BUT, this is a smaller sample size
+```{r}
+colnames(nine_tenChem)
+# personID, physicsSemPassed9, engineering, ChemSemPassed10""
+nine_ten_eng <- nine_tenChem[c(1, 3, 10, 25)]
+
+#engineering & Physics
+chisq.test(nine_ten_eng$physicsSemPassed9, nine_ten_eng$engineering, simulate.p.value = TRUE)
+#engineering & chem
+chisq.test(nine_ten_eng$ChemSemPassed10, nine_ten_eng$engineering, simulate.p.value = TRUE)
+
+# physics & engineering
+library(ggplot2)
+ggplot(nine_ten_eng, aes(physicsSemPassed9, engineering)) +
+  geom_count()+
+  geom_jitter(width=.2, height=.2) 
+  #geom_jitter() # or try default
+
+
+# chem & engineering
+library(ggplot2)
+ggplot(nine_ten_eng, aes(ChemSemPassed10, engineering)) +
+  geom_count()+
+  geom_jitter(width=.2, height=.2) 
+  #geom_jitter() # or try default
+
+
+```
+
+### QUESTION:
+- Can 9th grade grades predict success or failure in Biology?
+```{r}
+rm(list=ls())
+nine_Ten_Eleven <- readRDS("nine_10_11_clean_2015.rds")
+
+```
+
+```{r}
+# only complete cases
+#nine_Ten_Eleven2 <- nine_Ten_Eleven[!(is.na(nine_Ten_Eleven$BioSemPassed11) & is.na(nine_Ten_Eleven$BioSemPassed11)),]
+nine_Ten_Eleven2<- nine_Ten_Eleven[complete.cases(nine_Ten_Eleven),]
+
+#remove Bio semesters passed11
+nine_Ten_Eleven2 <- nine_Ten_Eleven2[-c(23,24)]
+```
+
+
+### Rpart decision tree For Chemistry Prediction
+```{r}
+# split train/test
+# split into 70/30 random
+set.seed(100)
+train <- sample(nrow(nine_Ten_Eleven2), 0.7*nrow(nine_Ten_Eleven2), replace = FALSE)
+TrainSet_11 <- nine_Ten_Eleven2[train,]
+TestSet_11 <- nine_Ten_Eleven2[-train,]
+
+#summary(TrainSet_11)
+#summary(TestSet_11)
+```
+### Tuning the Complexity Parameter (cp) and using cross validation
+- Using 10 fold cross validation
+- Image for reference # https://www.edureka.co/blog/implementation-of-decision-tree/
+- Want to select the cp that minimizes cross-validated error and maximizes accuracy
+- Kappa compares how closely machine matches data labeled as truth, controlling for the accuracy of a random classificted as measured by the expected accuracy  # Reference https://stats.stackexchange.com/questions/82162/cohens-kappa-in-plain-english
+    + You can directly compare Kappa statistics
+```{r}
+library(caret)
+library(e1071)
+
+numFolds <- trainControl(method="cv", number=10)
+cpGrid <- expand.grid(.cp = seq(0.01, 0.5, 0.01))
+train(predBio ~ ., data = TrainSet_11, method = "rpart", trControl = numFolds, tuneGrid = cpGrid)
+```
+
+### Decision tree Model for Bio
+
+```{r}
+library(rpart)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+#model
+rpartTree_11 <- rpart(predBio ~., data=TrainSet_11, method="class", cp=.27, parms= list(split="gini"))
+#prediction
+predictionCV_11 <- predict(rpartTree_11, newdata=TestSet_11, type="class")
+table11 <- table(TestSet_11$predBio, predictionCV_11)
+
+
+printcp(rpartTree_11)
+
+confusionMatrix(TestSet_11$predBio, predictionCV_11)
+
+sum(diag(table11))/sum(table11) #overall accuracy
+1-sum(diag(table11))/sum(table11) #incorrect classification 
+
+library(rpart.plot)
+prp(rpartTree_11)
+fancyRpartPlot(rpartTree_11)
+```
+
+### Can We predict Chemistry success from 9th grade classes ONLY (not including Chem)
+
+```{r}
+#remove Chem columns
+nine_Ten_Eleven2_noChem <- nine_Ten_Eleven2[-c(21,22)]
+```
+
+### decision tree
+- No CHEM trying to predict Bio
+
+```{r}
+# split train/test
+# split into 70/30 random
+set.seed(100)
+train <- sample(nrow(nine_Ten_Eleven2_noChem), 0.7*nrow(nine_Ten_Eleven2_noChem), replace = FALSE)
+TrainSet_11_2 <- nine_Ten_Eleven2_noChem[train,]
+TestSet_11_2 <- nine_Ten_Eleven2_noChem[-train,]
+
+#summary(TrainSet_11_2)
+#summary(TestSet_11_2)
+```
+
+
+```{r}
+library(caret)
+library(e1071)
+
+numFolds <- trainControl(method="cv", number=10)
+cpGrid <- expand.grid(.cp = seq(0.01, 0.5, 0.01))
+train(predBio ~ ., data = TestSet_11_2, method = "rpart", trControl = numFolds, tuneGrid = cpGrid)
+
+
+```
+### Building predicting Bio no Chem Model
+- 67% accuracy
+- Kappa is .234 - so better than predicting at random
+- Neg preditive value is 87% is better than 35% positive predictor - better at determining students that will fail that pass
+-  two best predictors are english semesters passed and physicstype9
+- This model is WORSE in accuracy than using chem to predict success
+```{r}
+library(rpart)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+#model
+rpartTree_11_2 <- rpart(predBio ~., data=TrainSet_11_2, method="class", cp=.03, parms= list(split="gini"))
+#prediction
+predictionCV_11_2 <- predict(rpartTree_11_2, newdata=TestSet_11_2, type="class")
+table11_2 <- table(TestSet_11$predBio, predictionCV_11_2)
+
+
+printcp(rpartTree_11_2)
+
+confusionMatrix(TestSet_11_2$predBio, predictionCV_11_2)
+
+sum(diag(table11_2))/sum(table11_2) #overall accuracy
+1-sum(diag(table11_2))/sum(table11_2) #incorrect classification 
+
+library(rpart.plot)
+prp(rpartTree_11_2)
+fancyRpartPlot(rpartTree_11_2)
+```

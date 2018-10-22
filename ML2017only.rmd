@@ -1,0 +1,596 @@
+---
+title: "2017 - 9th graders only - Physics prediction "
+author: "kat"
+date: "September 24, 2018"
+output:
+  html_document:
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+rm(list=ls())
+```
+## Purpose
+- The purpose of this document is to take the cleaned rv.keepMASTER.rds file and transform file from rows as courses to columns as courses and then merge with demographics. After, multiple correspondence analysis and machine learning methods (Logistic Regression) will be applied.
+- Questions:
+- What previous demographics or coursework can predict success/failure in Physics?
+- Which is the most failed quarter of physics in 2017, 2018, 2019? statistical testing
+
+## Plan
+1. Remove duplicates
+2. Spread data
+3. Create prediction column based on physics classes
+4. END goal for data: columns are classes students took freshman year, prediction column is pass (A, B, C all 4 quarters), fail (D, F any quarter)
+5. Run logistic regression for pass/fail
+
+##  In this document
+- full9C - cleaned up df
+- full9C_100 - only with more than 100 students taking the class
+- MCA - run on full9C_100
+- logistic regression 1 - on full9C
+- logistic regression 2 - on full9C with demographics
+- XGboost run - for variable importance ***dealing with collinearity?
+- logistic regression 3 - took only important variables from XGboost and rerun - accuracy worse, 45%
+```{r}
+rv.keep <- readRDS("rv.keepMASTER.rds")
+
+```
+
+## Keep only 9th graders 2017
+- 573 total students
+```{r}
+twenty17_9 <- rv.keep[rv.keep$startYear == 2017 & rv.keep$grade == 9, ]
+#twenty17_9
+#unique(twenty17_9$personID)
+```
+
+
+## Remove duplicated rows, spread & merge data
+- Delete duplicate rows based on courseduplicator code (2275 rows removed)
+- scoreNum as factor
+- Convert data to wide
+
+```{r}
+#remove all duplicate rows based on whether they have teh same course duplicater code #http://www.sthda.com/english/wiki/identifying-and-removing-duplicate-data-in-r
+twenty17_9 <- twenty17_9[!duplicated(twenty17_9$courseduplicater),]
+
+#take only personID,  scoreNum, courseIdentifier  ***numerical score
+twenty17_9_forspread <- twenty17_9[,c(2, 50, 52)]
+
+#convert scores to factor
+
+twenty17_9$scoreNum <- as.factor(twenty17_9$scoreNum)
+#Below is all 2017 freshman and their classes spread
+library(tidyr)
+twenty17_9W <- spread(twenty17_9_forspread, courseIdentifier, scoreNum, fill=TRUE)
+#twenty17_9W
+
+```
+
+### NEXT CHUNK NOT NECESSARY FOR FINAL ANALYSIS
+### Convert grades to numeric and find most common classes
+- Calculate Column Sums, remove courses that have less than _____ students
+- DID NOT USE THIS REMOVE STUDENTS, BUT CAN IF NECESSARY LATER
+```{r}
+library(varhandle)
+#convert all columns to numeric 
+twenty17_9W <- unfactor(twenty17_9W)
+
+#calculate column sums
+courses <- colSums(twenty17_9W, na.rm=TRUE)
+
+#converting colsum to dataframe, keep row names, sort
+library(data.table)
+library(dplyr)
+courses <- as.data.frame(courses)
+courses <- setDT(courses, keep.rownames = TRUE)[]
+
+courses <- courses[order(-courses),]
+#Remove Personal ID
+courses <- courses[-1,]
+```
+
+### Merge domographics with wide data
+- pull necessary demographics columns (from twenty17_9) becomes twenty17_9_demo
+- merge with twent17_9W from above to create full9
+
+```{r}
+#pull only important demographic columns
+keep <- c("personID", "Gender", "Grade", "RaceEthnicityState", "MealStatus", "Homeless", "SpecialEdDisability", "Section504", "ELL", "Gifted", "immigrant", "IEP", "EconDis", "HomePrimaryLanguage" )
+twenty17_9_demo <- twenty17_9[keep]
+
+#get only unique participant idds
+twenty17_9_demo <- twenty17_9_demo[!duplicated(twenty17_9_demo$personID),]
+
+#merge demographic with class columns
+full9 <- merge(twenty17_9W, twenty17_9_demo, by="personID", keep=TRUE)
+#full9
+```
+
+### Convert all Physics columns to either 1 or 0
+- create copy of all physics columns to verify grade change works
+- change grades to pass (1), fail (0), other(AU, etc)
+```{r}
+full9$`HSC1009-Physics 1-Q10` <- full9$`HSC1009-Physics 1-Q1`
+full9$`HSC1009-Physics 1-Q20` <- full9$`HSC1009-Physics 1-Q2`
+full9$`HSC1009-Physics 1-Q30` <- full9$`HSC1009-Physics 1-Q3`
+full9$`HSC1009-Physics 1-Q40` <- full9$`HSC1009-Physics 1-Q4`
+full9$`HSC1109-Honors Physics 1-Q10` <- full9$`HSC1109-Honors Physics 1-Q1`
+full9$`HSC1109-Honors Physics 1-Q20` <- full9$`HSC1109-Honors Physics 1-Q2`
+full9$`HSC1109-Honors Physics 1-Q30` <- full9$`HSC1109-Honors Physics 1-Q3`
+full9$`HSC1109-Honors Physics 1-Q40` <- full9$`HSC1109-Honors Physics 1-Q4`
+full9$`HSCS1009-Physics 1-Q10` <- full9$`HSCS1009-Physics 1-Q1`
+full9$`HSCS1009-Physics 1-Q20` <- full9$`HSCS1009-Physics 1-Q2`
+full9$`HSCS1009-Physics 1-Q30` <- full9$`HSCS1009-Physics 1-Q3`
+full9$`HSCS1009-Physics 1-Q40` <- full9$`HSCS1009-Physics 1-Q4`
+```
+
+### Pass = 1, Fail = 0
+```{r}
+cols <- c("HSC1009-Physics 1-Q1", "HSC1009-Physics 1-Q2", "HSC1009-Physics 1-Q3", "HSC1009-Physics 1-Q4", "HSC1109-Honors Physics 1-Q1", "HSC1109-Honors Physics 1-Q2", "HSC1109-Honors Physics 1-Q3", "HSC1109-Honors Physics 1-Q4", "HSCS1009-Physics 1-Q1", "HSCS1009-Physics 1-Q2", "HSCS1009-Physics 1-Q3", "HSCS1009-Physics 1-Q4")
+
+#cover all 1's to D's otherwise below wil not rewrite correctly
+for (i in cols){
+full9[[i]] <- ifelse(full9[[i]] == 4, 1,
+                  ifelse(full9[[i]] == 3, 1, 
+                      ifelse(full9[[i]] == 2, 1, 
+                        ifelse(full9[[i]] == 1, 0, 
+                          ifelse(full9[[i]] == "NA", "NA", 0)))))
+}
+
+#full9
+#check
+#colnames(full9)
+#full9[c(281:284, 370:373)]
+```
+
+### Create Physics predictor column
+- Search for all Physics classes
+- Create column sums - predsumPhys column - 4 means passed all 4 = P,   all else = F
+- create predPhy column - P - 4, passed all 4 quarers, F= 3, 2, 1, 0, failed at least 1 quarter
+- In predPhy
+    + 307 "failed", meaning they have 1 or more quarters of D or F
+    + 271 "passed", meaning they have all 4 quarters A, B, or C
+
+- In predsumPhy
+    + 4 - 271 - failed none
+    + 3 - 58 - failed 1
+    + 2 - 48  ; 2.1 = 1 - failed 2
+    + 1 - 50 ; 1.1 = 1  - FAILED 3 quarters
+    + 0 - 148 ; 0.1 = 1  FAILED all 4 quarters
+    
+```{r}
+# which classes are Physics?
+full9[ , grepl( "Physics" , names( full9 ) ) ]
+
+#3 classes, 4 quarters each = 12
+#HSC1109-Honors Physics 1-Q4
+#HSCS1009-Physics 1-Q1
+#HSC1009-Physics 1-Q1
+full9$predsumPhy<- rowSums(full9[,c("HSC1009-Physics 1-Q1", "HSC1009-Physics 1-Q2", "HSC1009-Physics 1-Q3", "HSC1009-Physics 1-Q4", "HSC1109-Honors Physics 1-Q1", "HSC1109-Honors Physics 1-Q2", "HSC1109-Honors Physics 1-Q3", "HSC1109-Honors Physics 1-Q4", "HSCS1009-Physics 1-Q1", "HSCS1009-Physics 1-Q2", "HSCS1009-Physics 1-Q3", "HSCS1009-Physics 1-Q4" )], na.rm=TRUE)
+
+#full9$predsum <- full9$`HSC1009-Physics 1-Q1` + full9$`HSC1009-Physics 1-Q2`+ full9$`HSC1009-Physics 1-Q3` + full9$`HSC1009-Physics 1-Q4`
+#colnames(full9)
+#full9[,c(371, 1:370)]
+
+#create predPhy column
+
+full9$predPhy[full9$predsumPhy == 4] <- "p"
+full9$predPhy[full9$predsumPhy != 4] <- "f"
+full9[,c(371,372, 1:370)]
+table(full9$predPhy)
+table(full9$predsumPhy)
+```
+
+
+
+### check predsum is working - THIS CHUNK NOT NECSSARY FOR ANALYSIS
+```{r}
+keep <- c("predsumPhy", "HSC1009-Physics 1-Q1", "HSC1009-Physics 1-Q2", "HSC1009-Physics 1-Q3", "HSC1009-Physics 1-Q4", "HSC1109-Honors Physics 1-Q1", "HSC1109-Honors Physics 1-Q2", "HSC1109-Honors Physics 1-Q3", "HSC1109-Honors Physics 1-Q4", "HSCS1009-Physics 1-Q1", "HSCS1009-Physics 1-Q2", "HSCS1009-Physics 1-Q3", "HSCS1009-Physics 1-Q4" )
+length(keep) #to verify # of columns in demo
+
+names.use <- names(full9)[(names(full9) %in% keep)]
+#full9[, names.use]
+```
+
+#Remove Physics columns & extra cols
+- Removed all columns with physics except prediction
+- Removed participantID
+- saved as full9C "full9Clean"
+
+```{r}
+#full9[ , grepl("Physics" , names( full9 ) ) ] #all rows that have physics columns
+
+#find vector numbers that contain physics
+remove <- grep( "Physics" , names( full9 ) , value=TRUE )
+
+# add "personID" & predsumPhy to remove columns
+a <- "personID" #personID
+b <- "predsumPhy" #predsumPhy
+e <- "Grade"
+c<- append(remove, a)
+d <- append(b, c)
+remove2 <- append(d, e)
+#remove2
+
+myvars <- names(full9) %in% remove2
+full9C <- full9[!myvars]
+
+```
+# Check where most missing values
+```{r}
+library(mice)
+#md.pattern(shrooms)
+library(VIM) #for plot
+mice_plot <- aggr(full9C, col=c("navyblue", "yellow", numbers=TRUE, sortVars=TRUE, labels=names(full9C), cex.avis=.7, gap=3, ylab=c("Missing Data", "Pattern")))
+
+```
+### WORK IN PROGRESS - FOR MCA
+- class must have at least 20 students in it (.05%)
+- see document "courseStudentCount" in practicum folder
+
+```{r, eval=FALSE}
+#ncol(full9C)
+table2 <- function(x) {
+  table(x, useNA = "always")
+}
+apply(full9C, 2, table2 ) # this function creates table with NAs for all columns
+
+#colnames(full9C)
+```
+
+### subset courses that have more than 100 students & demographics ONLY
+
+```{r}
+demos <- colnames(full9C)[344:356]
+more_100 <- c("HEL1224-Freshman Seminar-Q2", "HEL1224-Freshman Seminar-Q4", "HLA1012-English 9-Q1", "HLA1012-English 9-Q2", "HLA1012-English 9-Q3", "HLA1012-English 9-Q4", "HLA1022-Honors English 9-Q1", "HLA1022-Honors English 9-Q2","HLA1022-Honors English 9-Q3", "HLA1022-Honors English 9-Q4", "HMA1010-Integrated Alg/Geo 1-Q1","HMA1010-Integrated Alg/Geo 1-Q2", "HMA1010-Integrated Alg/Geo 1-Q3", "HMA1010-Integrated Alg/Geo 1-Q4","HMA1012-Honors Integrated Alg/Geom 2-Q1", "HMA1012-Honors Integrated Alg/Geom 2-Q2", "HMA1012-Honors Integrated Alg/Geom 2-Q3","HMA1012-Honors Integrated Alg/Geom 2-Q4", "HPE1015-Health & Activity for Life-Q1", "HPE1015-Health & Activity for Life-Q2","HPE1015-Health & Activity for Life-Q3", "HPE1015-Health & Activity for Life-Q4", "HSS1011-Geography-Q1","HSS1011-Geography-Q2", "HSS1011-Geography-Q3", "HSS1011-Geography-Q4","HSS1026-AP Human Geography-Q1", "HSS1026-AP Human Geography-Q2", "HSS1026-AP Human Geography-Q3","HSS1026-AP Human Geography-Q4")
+
+more_100 <- append(more_100, demos)
+#more_100
+
+#subset full9C with only more_100 columns and demos above
+full9C_100 <- full9C[more_100]
+
+saveRDS(full9C_100, "full9C_100.rds")
+```
+
+#### Multiple Correspondence Analysis (MCA)
+# Reference (http://www.sthda.com/english/articles/31-principal-component-methods-in-r-practical-guide/114-mca-multiple-correspondence-analysis-in-r-essentials/)
+- using full9C_100 - which has only classes with more than 100 students
+
+```{r}
+library(FactoMineR)
+library(factoextra)
+
+options(max.print=1000000)
+#plots histogram for each variable
+#summary(full9C)
+#for (i in 1:20) {
+#  hist(full9C[,i], main=colnames(full9C)[i],
+#       ylab = "count", col="steelblue", las=2)
+#}
+
+#convert all columns to factors
+col_names2 <- colnames(full9C_100)
+full9C_100[col_names2] <- lapply(full9C_100[col_names2], factor)
+
+#run MCA without predictor column & demographics
+mca <- MCA(full9C_100[-c(31:43)],ncp=5, graph=TRUE)
+mca
+
+```
+### get eigenvalues & plot
+- There are no eigenvalues greater than 1, which is what I need to look for according to my reference
+```{r}
+#reference http://hosted.jalt.org/test/bro_10.htm
+round(get_eigenvalue(mca), 3)
+
+fviz_screeplot(mca, addlabels=TRUE, ylim=c(0,30))
+fviz_mca_biplot(mca, repel=TRUE, ggtheme=theme_minimal())
+
+```
+
+### coordinates of categories
+```{r}
+var <- get_mca_var(mca)
+head(var$coord)
+head(var$cos2)
+head(var$contrib)
+```
+
+### correlation between variables & principle dimensions
+- THE FOLLOWING CATEGORIES ARE CORRELATED TOGETHER
+- Geography, Intergreated Lagebra, English are high in Dim 1 & Dim 2 
+- Honors English & SOME OTHERS I CAN"T SEE -- CHECK THIS LATER are high in DIm 1, not 2
+- Freshman Seminar, low to medium in Dim 2, none in dim 1, Healthy & activity for life - low dim 1 & 2
+
+```{r}
+fviz_mca_var(mca, choice="mca.cor", #repel=TRUE #avoid text overlapping
+              ggtheme=theme_minimal())
+```
+### coordinates of variable categories
+- If a variable is well represented by 2 dimensions, the sum of the cos2 is close to 1
+- It seems that Integreated Alg, English(NEED TO SEE OTHERS) are .6 (60%??) represnted by dim 1 & 2
+    + Some of these are NA though, so that makes it tricky!!!
+```{r}
+
+fviz_mca_var(mca, ggtheme=theme_minimal(), col.var='cos2', shape.var=15)
+```
+### visualize cos2 of row categories on all dimensions
+```{r}
+library(corrplot)
+corrplot(var$cos2, is.corr=FALSE)
+fviz_cos2(mca, choice="var", axes=1:2)
+
+```
+```{r}
+library(dplyr)
+library(tidyverse)
+cos2_df <- data.frame(round(var$cos2,3))
+cos2_df$sum <- cos2_df$Dim.1 + cos2_df$Dim.2
+cos2_df <- as_tibble(rownames_to_column(cos2_df, "course"))
+cos2_df %>% arrange(-sum)
+```
+
+### contributions of variables to dimensions
+```{r}
+#dim 1
+fviz_contrib(mca, choice="var", axes=1, top=15)
+#dim2
+fviz_contrib(mca, choice="var", axes=2, top=15)
+fviz_contrib(mca, choice="var", axes=3, top=15)
+#total  & 2
+fviz_contrib(mca, choice="var", axes=1:2, top=15)
+```
+### most important or contriburing variables
+```{r}
+fviz_mca_var(mca, col.var="contrib", repel=TRUE)
+
+```
+### individual results
+- Why are 9 students contributing more than others to the dimension?
+    + see below which students, they all failed physics
+```{r}
+#individuals by cos2 value
+fviz_mca_ind(mca, col.ind="cos2", repel=TRUE)
+#plot
+# Cos2 of individuals
+fviz_cos2(mca, choice = "ind", axes = 1:2, top = 50)
+# Contribution of individuals to the dimensions
+fviz_contrib(mca, choice = "ind", axes = 1:2, top = 50)
+
+#from above, these students are failing or getting D's in almost all classes, they all failed Physics
+full9C[c(143,438,431,334,485,360,314,504,194),]
+```
+### Individuals
+- This is interesting!
+- If I split on whether they got A, B,C or D/F, it looks like students who failed tend
+to be low on Dim 1, and a mix on Dim 2
+- Those who passed - Range on Dim 1, low on Dim 2
+```{r}
+fviz_mca_ind(mca, label="none", habillage=full9C_100$predPhy, addEllipses=TRUE, ellipse.type="confidence")
+fviz_ellipses(mca, c(3,11), geom="point")
+```
+### dimension description
+- gives more correlated varianges with a given dimension
+```{r}
+res.desc <- dimdesc(mca, axes=c(1,2))
+res.desc[[1]] #description of dimension 1
+res.desc[[2]] #description of dimension 2
+```
+
+
+### Dummy code all categorical variables
+- covert all columns to factor
+- dummy code all columns except predictor
+- 357 prePhy is predicted pass/fail in Physics
+```{r}
+#str(full9C)
+col_names <- colnames(full9C)
+full9C[col_names] <- lapply(full9C[col_names], factor)
+
+#dummy code
+library(dummies)
+
+comp_dum <- dummy.data.frame(data=as.data.frame(full9C[,-356]), sep=".")  # covert all variables to dummy vars, less predict column
+comp_dum <- cbind(full9C[,356], comp_dum) #combine predicted column with dummy vars
+#head(comp_dum)
+colnames(comp_dum)[1] <- c("predictPhys")
+
+########## SAVE OUTPUT FILE
+saveRDS( comp_dum, file="compdum.rds")
+#########
+```
+
+### SAVE COMP_DUM & full9C for use in other files!!!
+
+```{r, eval=FALSE}
+
+saveRDS(comp_dum, "comp_dum.rds")
+saveRDS(full9C, "full9C.rds")
+```
+
+### Logistic Regression ALL Columns
+- shuffle row-wise (573 total rows)
+- split data 70/30  (401/172)
+- run glm(), family=binomial
+- Accuracy is 53.7% with all variables!
+
+```{r}
+nrow(comp_dum)
+#shuffle rows
+comp_dum_shuffle <- comp_dum[sample(nrow(comp_dum)),]
+#train/test set
+train <- comp_dum_shuffle[1:401, ]
+test <- comp_dum_shuffle[401:573,]
+#model
+model <- glm(predictPhys ~., family=binomial(link="logit"), data=train)
+#summary(model) PRINTS OUT FULL RESULTS
+
+#Prints out FULL summary - only print if needed
+#options(max.print=1000000)
+#summary(model)
+model$aic
+
+fitted.results <- predict(model, newdata=test, type='response' )
+fitted.results2 <- ifelse(fitted.results >0.5, 1, 0)
+table_test <- table(fitted.results2, test$predictPhys)
+table_test
+#accuracy
+sum(diag(table_test)) / sum(table_test)
+```
+
+
+
+### logistic regression 2
+- Only based on  information train_demo, test_demo
+- 1, 1414:1447
+- 53% accuracy
+- ISSUE: Model did not converge -- WHY???
+
+```{r}
+train_demo <- train[c(1, 1414:1447)]
+test_demo <- test[c(1, 1414:1447)]
+
+model2 <- glm(predictPhys ~., family=binomial(link="logit"), data=train_demo)
+summary(model2)
+
+fitted.results3 <- predict(model2, newdata=test_demo, type='response' )
+fitted.results4 <- ifelse(fitted.results3 >0.5, 1, 0)
+table_test2 <- table(fitted.results4, test_demo$predictPhys)
+table_test2
+sum(diag(table_test2)) / sum(table_test2)
+```
+
+### XGBoost - understanding features of dataset
+- using comp_dum to covert to matrix
+- convert output vector to 0, 1
+```{r}
+comp_dum_matrix <- matrix(as.numeric(unlist(comp_dum[-1])), nrow=nrow(comp_dum))
+#comp_dum_matrix <- data.matrix(comp_dum[-1])
+output_vector <- comp_dum$predictPhys
+#head(sparse_matrix)
+#convert output vector (predictPhy) to 0,1
+output_vector <- ifelse(output_vector == "p", 1, 0)
+table(output_vector)
+
+#Run XGBoost
+#Reference XGBoost https://xgboost.readthedocs.io/en/latest/R-package/discoverYourData.html
+library(xgboost)
+library(Matrix)
+library(data.table)
+if (!require('vcd')) install.packages('vcd')
+
+#create model
+model_boost <- xgboost(data=comp_dum_matrix, label=output_vector, max.depth=4, eta=1, nthread =2, nrounds =5, objective = "binary:logistic")
+
+#plot results 
+results <- (model_boost$evaluation_log)
+plot( results$train_error ~ results$iter)
+```
+
+### measure Feature Importance
+```{r}
+importance <- xgb.importance(colnames(comp_dum), model=model_boost)
+#importance
+xgb.plot.importance(importance_matrix = importance)
+important_feat <- importance$Feature #for use later when subsetting data
+```
+
+
+
+### Checking chi-squared for features and output
+Ho: Grade in Freshman SeminarQ4 is independent of grade in Physics
+Ha: Grade in Freshman seminarQ4 is not independent of grade in Physics
+Conclusion: with pvalue <.001, We reject that grade in Freshman seminarQ4 is independent of grade in Physics, so the 2 variables are related
+```{r}
+#reference http://www.r-tutor.com/elementary-statistics/goodness-fit/chi-squared-test-independence
+c2 <- chisq.test(full9C$`HEL1224-Freshman Seminar-Q4`, output_vector)
+c2
+
+```
+
+### Freshman Seminar grade & passing physics
+```{r}
+#frequencies reference https://www.statmethods.net/stats/frequencies.html
+library(dplyr)
+
+mytable <- table(full9C$`HEL1224-Freshman Seminar-Q4`, full9C$predPhy)
+prop.table(mytable)
+mytable2 <- xtabs(~ `HEL1224-Freshman Seminar-Q4`+ predPhy, data=full9C)
+ftable(mytable2)
+summary(mytable2)
+```
+### Frequency table of Physics grade & algebra grade
+```{r}
+table(full9C$predPhy, full9C$`HMA1010-Integrated Alg/Geo 1-Q1`)
+```
+### frequency table of physics grade and gender & Chi-squared
+Ho: Gender and Physics grade are independent
+Ha: Gender and PHysics grade are not independent, related
+Conclusion: p value 0.01 suggests gender and physics grade are related 
+```{r}
+prop.table(table(full9C$predPhy, full9C$Gender))
+chisq.test(full9C$Gender, output_vector)
+```
+### Logistic Regression #3
+- Pull out important features from XGboost from comp_dum because xgboost was done on dummy coded data (comp_dum)
+- re-run logistic regression
+- 78.6%%% accuracy , but model converges
+- still issue of collinearity?
+```{r}
+# select only variables from XGBoost using variable from above "important_feat"
+important_feat <- importance$Feature #for use later when subsetting data
+# select predictor column also
+c <- c("predictPhys")
+important_feat <- append(important_feat, c)
+comp_dum_important_feat <- comp_dum[important_feat]
+
+#shuffle new comp_dum df
+comp_dum_important_feat_shuffle <- comp_dum_important_feat[sample(nrow(comp_dum_important_feat)),]
+
+#breakup into testing/training set
+train2 <- comp_dum_important_feat_shuffle[1:401, ]
+test2 <- comp_dum_important_feat_shuffle[401:573,]
+
+###############
+### Save Important features test & train set
+saveRDS(train2, file = "train2_9th_comp_dum.rds")
+saveRDS(test2, file="test2_9th_comp_dum.rds")
+###########
+
+#rerunning logistic regression model
+model <- glm(predictPhys ~., family=binomial(link="logit"), data=train2)
+summary(model)
+
+#fitted.results <- predict(model, newdata=subset(test2,select=c(1:35)), type='response' )
+glm.probs <- predict(model, newdata=test2, type='response')
+sort(round(glm.probs, 2))
+
+glm.pred <- ifelse(glm.probs >0.5, 1, 0)
+
+table(glm.pred, test2$predictPhys )
+misClasificError <- mean(fitted.results != test2$predictPhys)
+print(paste('Accuracy', 1-misClasificError))
+mean(glm.pred) # this is just the mean probability NOT accuracy!!!!
+
+```
+
+```{r}
+library(data.table)
+pval <- as.data.frame(coef(summary(model))[,4])
+pval <- setDT(pval, keep.rownames = TRUE)
+colnames(pval) <- c( "variable", "pval")
+#pval
+pval[order(rank(pval))]
+```
+
+```{r}
+library(dplyr)
+test <- glm.probs %>% tbl_df() %>% rownames_to_column()
+colnames(test) <- c("student", "probability")
+test %>% filter(probability >= .4 & probability <=.6)
+
+```
+
