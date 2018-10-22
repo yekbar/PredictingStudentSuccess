@@ -73,7 +73,7 @@ The raw data consisted of 175,353 rows and 125 columns for 3 school years from 2
 - 86% Accuracy was achieved in predicting Physics success with 9th grades
 - 77.7% Accuracy was achieved with predicting Chemistry success with 9th grades
 - 78% Accuracy was achived with predicting Biology success with 9th grades
-<img src="PassFail.png" width="75%" />
+<img src="PassFail.PNG" width="75%" />
 
 
 ### Tools

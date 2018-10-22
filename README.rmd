@@ -78,7 +78,7 @@ knitr::include_graphics("processNEW.png")
 - 77.7% Accuracy was achieved with predicting Chemistry success with 9th grades
 - 78% Accuracy was achived with predicting Biology success with 9th grades
 ```{r echo=FALSE, fig.cap="", out.width = '75%'}
-knitr::include_graphics("PassFail.png")
+knitr::include_graphics("PassFail.PNG")
 ```
 
 
